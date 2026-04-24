@@ -59,6 +59,7 @@ export const signUp = async ({ password, ...userData }: SignUpParams) => {
 
   try {
     const { account, database } = await createAdminClient();
+    console.log("✅ 1. Admin client created");
 
     newUserAccount = await account.create(
       ID.unique(), 
@@ -66,6 +67,7 @@ export const signUp = async ({ password, ...userData }: SignUpParams) => {
       password, 
       `${firstName} ${lastName}`
     );
+    console.log("✅ 2. Account created:", newUserAccount.$id);
 
     if(!newUserAccount) throw new Error('Error creating user')
 
@@ -73,10 +75,12 @@ export const signUp = async ({ password, ...userData }: SignUpParams) => {
       ...userData,
       type: 'personal'
     })
+    console.log("✅ 3. Dwolla URL:", dwollaCustomerUrl);
 
     if(!dwollaCustomerUrl) throw new Error('Error creating Dwolla customer')
 
     const dwollaCustomerId = extractCustomerIdFromUrl(dwollaCustomerUrl);
+    console.log("✅ 4. Dwolla ID:", dwollaCustomerId);
 
     const newUser = await database.createDocument(
       DATABASE_ID!,
@@ -89,8 +93,10 @@ export const signUp = async ({ password, ...userData }: SignUpParams) => {
         dwollaCustomerUrl
       }
     )
+    console.log("✅ 5. DB document created:", newUser.$id);
 
     const session = await account.createEmailPasswordSession(email, password);
+    console.log("✅ 6. Session created");
 
     cookies().set("appwrite-session", session.secret, {
       path: "/",
@@ -101,7 +107,12 @@ export const signUp = async ({ password, ...userData }: SignUpParams) => {
 
     return parseStringify(newUser);
   } catch (error) {
-    console.error('Error', error);
+    console.error('❌ SIGNUP FAILED:', error);
+    if(newUserAccount?.$id) {
+      const { user } = await createAdminClient();
+      await user.delete(newUserAccount.$id);
+    }
+    return null;
   }
 }
 
@@ -187,7 +198,6 @@ export const exchangePublicToken = async ({
   user,
 }: exchangePublicTokenProps) => {
   try {
-    // Exchange public token for access token and item ID
     const response = await plaidClient.itemPublicTokenExchange({
       public_token: publicToken,
     });
@@ -195,14 +205,12 @@ export const exchangePublicToken = async ({
     const accessToken = response.data.access_token;
     const itemId = response.data.item_id;
     
-    // Get account information from Plaid using the access token
     const accountsResponse = await plaidClient.accountsGet({
       access_token: accessToken,
     });
 
     const accountData = accountsResponse.data.accounts[0];
 
-    // Create a processor token for Dwolla using the access token and account ID
     const request: ProcessorTokenCreateRequest = {
       access_token: accessToken,
       account_id: accountData.account_id,
@@ -212,17 +220,14 @@ export const exchangePublicToken = async ({
     const processorTokenResponse = await plaidClient.processorTokenCreate(request);
     const processorToken = processorTokenResponse.data.processor_token;
 
-     // Create a funding source URL for the account using the Dwolla customer ID, processor token, and bank name
-     const fundingSourceUrl = await addFundingSource({
+    const fundingSourceUrl = await addFundingSource({
       dwollaCustomerId: user.dwollaCustomerId,
       processorToken,
       bankName: accountData.name,
     });
     
-    // If the funding source URL is not created, throw an error
     if (!fundingSourceUrl) throw Error;
 
-    // Create a bank account using the user ID, item ID, account ID, access token, funding source URL, and shareableId ID
     await createBankAccount({
       userId: user.$id,
       bankId: itemId,
@@ -232,10 +237,8 @@ export const exchangePublicToken = async ({
       shareableId: encryptId(accountData.account_id),
     });
 
-    // Revalidate the path to reflect the changes
     revalidatePath("/");
 
-    // Return a success message
     return parseStringify({
       publicTokenExchange: "complete",
     });
